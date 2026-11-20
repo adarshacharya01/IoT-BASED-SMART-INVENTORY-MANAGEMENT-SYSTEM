@@ -22,15 +22,15 @@
 #define RC522_SPI_BASE          LPSPI1
 #define RC522_SPI_CLK_FREQ      CLOCK_GetFreq(kCLOCK_ScgFircClk)
 
-/* CS pin: PTC2 (GPIO, software controlled) */
-#define RC522_CS_GPIO           GPIOC
-#define RC522_CS_PORT           PORTC
-#define RC522_CS_PIN            2U
+/* CS pin: PTA18 (GPIO, software controlled, J2-10) */
+#define RC522_CS_GPIO           GPIOA
+#define RC522_CS_PORT           PORTA
+#define RC522_CS_PIN            18U
 
-/* RST pin: PTC3 (GPIO) */
+/* RST pin: PTC4 (GPIO, free pin on PORTC) */
 #define RC522_RST_GPIO          GPIOC
 #define RC522_RST_PORT          PORTC
-#define RC522_RST_PIN           3U
+#define RC522_RST_PIN           4U
 
 /* SPI baudrate */
 #define RC522_SPI_BAUDRATE      1000000U  /* 1 MHz */
@@ -75,7 +75,8 @@ static void RC522_GPIO_Init(void)
 {
     gpio_pin_config_t gpioConfig;
 
-    /* Enable clock for PORTC */
+    /* Enable clock for PORTA (CS: PTA18) and PORTC (RST: PTC4) */
+    CLOCK_EnableClock(kCLOCK_PortA);
     CLOCK_EnableClock(kCLOCK_PortC);
 
     /* Configure CS pin as GPIO output */

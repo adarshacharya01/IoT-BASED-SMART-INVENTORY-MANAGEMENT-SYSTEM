@@ -128,10 +128,10 @@
 #define Serial_PrintDec(a)              (void)SerialManager_WriteBlocking((serial_write_handle_t)s_writeHandle, FORMAT_Dec2Str(a), strlen((char const *)FORMAT_Dec2Str(a)))
 #define Serial_PrintHex(a)              (void)SerialManager_WriteBlocking((serial_write_handle_t)s_writeHandle, FORMAT_Hex2Ascii(a), strlen((const char*)FORMAT_Hex2Ascii(a)))
 
-/* Buzzer GPIO: PTA18 (PORTA, Pin 18) */
-#define BUZZER_GPIO         GPIOA
-#define BUZZER_PORT         PORTA
-#define BUZZER_PIN          18U
+/* Buzzer GPIO: PTC5 (PORTC, Pin 5 — free GPIO, no pin conflict) */
+#define BUZZER_GPIO         GPIOC
+#define BUZZER_PORT         PORTC
+#define BUZZER_PIN          5U
 
 #define BUZZER_ON()         GPIO_PinWrite(BUZZER_GPIO, BUZZER_PIN, 1)
 #define BUZZER_OFF()        GPIO_PinWrite(BUZZER_GPIO, BUZZER_PIN, 0)
@@ -666,8 +666,8 @@ static void BleApp_BuzzerInit(void)
 {
     gpio_pin_config_t gpioConfig;
 
-    /* Enable clock for PORTA */
-    CLOCK_EnableClock(kCLOCK_PortA);
+    /* Enable clock for PORTC (shared with RC522 GPIO init, safe to call again) */
+    CLOCK_EnableClock(kCLOCK_PortC);
 
     /* Configure buzzer pin as GPIO output */
     PORT_SetPinMux(BUZZER_PORT, BUZZER_PIN, kPORT_MuxAsGpio);

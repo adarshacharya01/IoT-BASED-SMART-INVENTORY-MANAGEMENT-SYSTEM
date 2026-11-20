@@ -1,167 +1,172 @@
-# miniprojectiot
+# IoT-Based Smart Inventory Management System
 
-## IoT-Based Smart Inventory Management System Using FRDM-MCXW71 and RFID Technology
+**FRDM-MCXW71 + RC522 RFID Reader + BLE Wireless UART**
 
-An automated inventory tracking and management system utilizing the **FRDM-MCXW71** development board (Arm Cortex-M33, BLE 5.3), **RC522 RFID reader** (13.56 MHz SPI), buzzer audio feedback, and Bluetooth LE Wireless UART telemetry.
+An automated inventory tracking and management system using the **FRDM-MCXW71** development board (Arm Cortex-M33, BLE 5.3), **RC522 RFID reader** (13.56 MHz, SPI), active **buzzer** audio feedback, and **Bluetooth LE Wireless UART** telemetry to a phone or laptop.
 
-This demo serves as guide on enabling FXLS897xxx accelerometer over I2C and light sensor over ADC readings. The ADC conversions are triggered by a hardware timer trigger. The I2C transfers make use of ISSDK. Interact application through the IoT Toolbox using a Smartphone.
+---
 
-The IoT Sensing Software Development Kit (ISSDK) is the embedded software
-framework enabling NXP’s digital and analog sensors platforms for industrial and medical IoT applications. ISSDK support models across a broad range of NXP’s Arm® Cortex®-M cores based microcontrollers including NXP’s LPC, Kinetis and i.MX RT crossover platforms. More info at [IoT Sensing Software Development Kit (ISSDK).](https://www.nxp.com/design/design-center/software/sensor-toolbox/iot-sensing-software-development-kit-issdk-embedded-software-framework:IOT-SENSING-SDK)
+## 🔌 Hardware Connections
 
-The boar counts with a FXLS8964AF accelerometer compatible with FXLS89xxxF family driver. This demo modifies “hello world” application.
+### RC522 RFID Reader → FRDM-MCXW71
 
-### Accelerometer Sensor
+| RC522 Pin | FRDM-MCXW71 Pin | Note |
+|-----------|-----------------|------|
+| **3.3V**  | 3V3             | Power |
+| **GND**   | GND             | Ground |
+| **SDA (CS)** | **PTA18** (GPIOA pin 18) | Software CS |
+| **SCK**   | **PTB2** (LPSPI1_SCK)    | SPI Clock |
+| **MOSI**  | **PTB3** (LPSPI1_SOUT)   | SPI MOSI |
+| **MISO**  | **PTB1** (LPSPI1_SIN)    | SPI MISO |
+| **RST**   | **PTC4** (GPIOC pin 4)   | Reset (active low) |
+| **IRQ**   | Not connected   | Optional |
 
-Following picture shows the high-level layer architecture of the ISSDK v1.8 middleware. ISSDK is designed to provide separable layers of functionality that a customer can choose to use or ignore based on their specific needs. In addition, the ISSDK architecture is portable due to the use of open APIs (ARM Ltd. CMSIS Driver APIs).
+### Buzzer → FRDM-MCXW71
 
+| Buzzer Pin | FRDM-MCXW71 Pin | Note |
+|------------|-----------------|------|
+| **+**      | **PTC5** via 100Ω resistor | GPIOC pin 5 |
+| **−**      | GND             | Ground |
 
-[<p align="center">
-    <img src="images/ISSDK-IOT-SENSING-SDK-BD2.webp"  width="400" />
-    </p>](images/LightSens.svg "DC Component")
+> ⚠️ **Use 3.3V only for RC522 power.** Never connect 5V signals to the MCU GPIO.
 
-### Light Sensor
+---
 
-The light measured by the sensor may be a time variant signal. In order to get the DC component an average of signal is made. With 600 Hz sampling rate a 100 Hz signal can be extract easylly. Once six samples are taken and averaged a result is ready to be displayed.
-
-[<p align="center">
-    <img src="images/LightSens.svg"  width="400" />
-    </p>](images/LightSens.svg "DC Component")
-
-#### Boards: [FRDM-MCXW71](https://www.nxp.com/design/design-center/development-boards-and-designs/general-purpose-mcus/frdm-development-board-for-mcx-w71x-wireless-mcus:FRDM-MCXW71)
-
-#### Categories: Wireless Connectivity, Sensor
-
-#### Peripherals: ADC, I2C, PIT
-
-#### Toolchains: MCUXpresso IDE, VS Code
-
-## Table of Contents
-
-1. [Software](#step1)
-2. [Hardware](#step2)
-3. [Setup](#step3)
-4. [Results](#step4)
-5. [FAQs](#step5)
-6. [Support](#step6)
-7. [Release Notes](#step7)
-
-## 1. Software<a name="step1"></a>
-
-This code has been implemented using MCUXpresso IDE version 11.10.0 and SDK verison 2.16.000.
-
-**Note:**
-In order to use any wireless example in the MCXW71 you need to upload the NBU image. This image comes into the SDK version that you will use.
-
-NBU file be found in the following SDK path:
+## 🏗️ Software Architecture
 
 ```
-"SDK_2_XX_FRDM-MCXW71-> middleware-> wireless-> ble_controller-> bin-> mcxw71_nbu_ble-..-.sb3"
+RFID Card (13.56 MHz)
+       │ SPI (LPSPI1, 1 MHz, Mode 0)
+       ▼
+  RC522 Driver (source/rc522_drv.c)
+       │ RC522_DetectCard()
+       ▼
+  Inventory Engine (source/rfid_inventory.c)
+   • Add / Remove toggle on consecutive scans
+   • 3 pre-registered products (Laptop, Keyboard, Mouse)
+   • Unknown tag detection
+   • Buzzer feedback (success: 1 beep, error: 3 beeps)
+       │ BleApp_SendUartStream()
+       ▼
+  BLE Wireless UART Service (bluetooth/profiles/wireless_uart/)
+       │ BLE 5.3 (MCXW71 built-in radio)
+       ▼
+  Phone / Laptop BLE client
+  (NXP IoT Toolbox / nRF Connect / Web Bluetooth)
+       │ MQTT (via Python bridge)
+       ▼
+  Node-RED Dashboard  →  Real-time stock gauges & table
 ```
 
-You can load NBU image trough [**blhost**](https://www.nxp.com/webapp/sps/download/license.jsp?colCode=blhost_2.6.7&appType=file1&location=null&DOWNLOAD_ID=null). blhost is a command-line debug tool for sending individual commands to
-the bootloader.
+---
 
-Once blhost is downloaded the executable can be found in the following paht:
+## 📡 BLE Data Format
 
-```
-blhost_2.6.7.zip\blhost_2.6.7\bin\win
-```
+| Message | Meaning |
+|---------|---------|
+| `ADD:Laptop:11\n`         | Laptop added, stock now 11 |
+| `REMOVE:Keyboard:19\n`   | Keyboard removed, stock 19 |
+| `ALERT:UNKNOWN_TAG:A1B2C3D4\n` | Unregistered RFID tag |
+| `STATUS:Laptop:11,Keyboard:19,Mouse:15\n` | Full inventory (button press) |
 
-Locete NBU file and blhost excutable at in the same direcory and run the following command:
+BLE device name: **`RFID_INVENTORY`**  
+TX UUID: `01ff0100-ba5e-f4ee-5ca1-eb1e5e4b1ce0`
 
-```
- blhost -p COMXX receive-sb-file mcxw71_nbu_ble_1_X_XX_X.sb3 
-```
+---
 
-*Replace XX in command by the COMXX number assigned to your board.*
-
-[<p align="center"> <img src="images/com_port_ex.png" width="300"/> </p>](Images/com_port_ex.png)
-
-## 2. Hardware<a name="step2"></a>
-
-- [FRDM-MCXW71](https://www.nxp.com/design/design-center/development-boards-and-designs/general-purpose-mcus/frdm-development-board-for-mcx-w71x-wireless-mcus:FRDM-MCXW71)
-
-[<p align="center"> <img src="images/frdm-mcxw71.png" width=600> </p>](https://www.nxp.com/design/design-center/development-boards-and-designs/general-purpose-mcus/frdm-development-board-for-mcx-w71x-wireless-mcus:FRDM-MCXW71)
-
-## 3. Setup<a name="step3"></a>
-
-1. Build project.
-2. Connect board to your computer.
-3. Upload code to board.
-4. Push reset button.
-
-## 4. Results<a name="step4"></a>
-
-When powering the board it starts the advertising role, so you can connect your smartphone using the IoT Toolbox app:
-
-<p align="center">
-    <img src="images/iot_1.png" width=360 hspace="10"/>
-    <img src="images/iot_2.png" width=360 hspace="10" />
-</p>
-
-
-Application will have multiple functionalities; wireless uart and sensors.
-Once you connect your phone whit the board you can interact sensors thought the followign commands:
+## 📦 Project Structure
 
 ```
-SENS A
+miniprojectiot/
+├── source/
+│   ├── rfid_inventory.c   ← Main application (RFID + BLE + inventory logic)
+│   ├── rfid_inventory.h
+│   ├── rc522_drv.c        ← RC522 SPI driver
+│   ├── rc522_drv.h
+│   ├── gatt_db.h          ← BLE GATT database (device name: RFID_INVENTORY)
+│   ├── wireless_uart.h    ← Compatibility shim → includes rfid_inventory.h
+│   └── ...
+├── board/
+│   ├── pin_mux.c / pin_mux.h  ← Pin multiplexing
+│   └── ...
+├── dashboard/
+│   ├── ble_mqtt_bridge.py ← Python: BLE → MQTT bridge
+│   ├── node_red_flow.json ← Node-RED flow to import
+│   └── DASHBOARD_SETUP.md ← Step-by-step dashboard setup
+└── CMakeLists.txt
 ```
 
+---
+
+## 🔨 Building
+
+### Prerequisites
+- MCUXpresso for VS Code (NXP toolchain at `~/.mcuxpressotools/`)
+- arm-gnu-toolchain-14.2, CMake 3.30, Ninja
+
+### Build
+
+```powershell
+# Configure
+cmake --preset Debug
+
+# Build
+cmake --build --preset Debug
+
+# Output: Debug/frdmmcxw71_wireless_uart_bm_light_sensor.elf
 ```
-SENS L
+
+Flash via VS Code debugger (MCUXpresso Debug launch config) or LinkServer CLI.
+
+---
+
+## 📱 Dashboard Setup
+
+See [`dashboard/DASHBOARD_SETUP.md`](dashboard/DASHBOARD_SETUP.md) for full instructions.
+
+**Quick start:**
+```powershell
+# 1. Start Mosquitto broker
+mosquitto -v
+
+# 2. Start Node-RED
+node-red
+# → open http://localhost:1880, import dashboard/node_red_flow.json
+
+# 3. Start BLE bridge (after flashing firmware)
+cd dashboard
+python ble_mqtt_bridge.py
 ```
 
+---
 
-<p align="center">
-    <img src="images/iot_Accel.png" width=360 hspace="10" />
-    <img src="images/iot_light.png" width=360 hspace="10" />
-    <p align="center">
-    <img src="images/accel.png" width=360 hspace="10" />
-    <img src="images/light.png" width=360 hspace="10" />
-    </p>
-</p>
+## 🃏 Registering Your RFID Cards
 
-You can also change sensor displaying by push SW4.
+The default UIDs are placeholders. To use your own cards:
 
-## 5. FAQs<a name="step5"></a>
+1. Flash firmware and connect serial console (115200 baud).
+2. Scan your card — you will see `[RFID] UNKNOWN TAG: AABBCCDD`.
+3. Update `Inventory_Init()` in `source/rfid_inventory.c`:
+   ```c
+   mInventory[0].uid[0] = 0xAA; mInventory[0].uid[1] = 0xBB;
+   mInventory[0].uid[2] = 0xCC; mInventory[0].uid[3] = 0xDD;
+   FLib_MemCpy(mInventory[0].productName, "Laptop", 7);
+   ```
+4. Rebuild and re-flash.
 
-No FAQs have been identified for this project.
+---
 
-## 6. Support<a name="step6"></a>
+## 💡 Presentation Q&A
 
-#### Project Metadata
+| Question | Answer |
+|----------|--------|
+| Why RFID over barcode? | No line-of-sight needed, faster bulk scanning |
+| Why FRDM-MCXW71? | Arm Cortex-M33 with built-in BLE 5.3 — ideal for IoT |
+| Why BLE and not WiFi? | MCXW71 has no WiFi. BLE is low-power, phone acts as gateway |
+| Why RC522 over EM-18? | 3.3V compatible, faster SPI, industry-standard MIFARE |
+| Why MQTT? | Lightweight pub/sub protocol designed for IoT |
 
-<!----- Boards ----->
-[![Board badge](https://img.shields.io/badge/Board-FRDM&ndash;MCXW71-blue)]()
+---
 
-<!----- Categories ----->
-[![Category badge](https://img.shields.io/badge/Category-WIRELESS%20CONNECTIVITY-yellowgreen)](https://github.com/search?q=org%3Anxp-appcodehub+wireless_connectivity+in%3Areadme&type=Repositories)
-[![Category badge](https://img.shields.io/badge/Category-SENSOR-yellowgreen)](https://github.com/search?q=org%3Anxp-appcodehub+sensor+in%3Areadme&type=Repositories)
-
-<!----- Peripherals ----->
-[![Peripheral badge](https://img.shields.io/badge/Peripheral-ADC-yellow)](https://github.com/search?q=org%3Anxp-appcodehub+adc+in%3Areadme&type=Repositories)
-[![Peripheral badge](https://img.shields.io/badge/Peripheral-I2C-yellow)](https://github.com/search?q=org%3Anxp-appcodehub+i2c+in%3Areadme&type=Repositories)
-[![Peripheral badge](https://img.shields.io/badge/Peripheral-PWM-yellow)](https://github.com/search?q=org%3Anxp-appcodehub+pwm+in%3Areadme&type=Repositories)
-
-<!----- Toolchains ----->
-[![Toolchain badge](https://img.shields.io/badge/Toolchain-MCUXPRESSO%20IDE-orange)](https://github.com/search?q=org%3Anxp-appcodehub+mcux+in%3Areadme&type=Repositories)
-[![Toolchain badge](https://img.shields.io/badge/Toolchain-VS%20CODE-orange)](https://github.com/search?q=org%3Anxp-appcodehub+vscode+in%3Areadme&type=Repositories)
-
-Questions regarding the content/correctness of this example can be entered as Issues within this GitHub repository.
-
->**Warning**: For more general technical questions regarding NXP Microcontrollers and the difference in expected functionality, enter your questions on the [NXP Community Forum](https://community.nxp.com/)
-
-[![Follow us on Youtube](https://img.shields.io/badge/Youtube-Follow%20us%20on%20Youtube-red.svg)](https://www.youtube.com/NXP_Semiconductors)
-[![Follow us on LinkedIn](https://img.shields.io/badge/LinkedIn-Follow%20us%20on%20LinkedIn-blue.svg)](https://www.linkedin.com/company/nxp-semiconductors)
-[![Follow us on Facebook](https://img.shields.io/badge/Facebook-Follow%20us%20on%20Facebook-blue.svg)](https://www.facebook.com/nxpsemi/)
-[![Follow us on Twitter](https://img.shields.io/badge/X-Follow%20us%20on%20X-black.svg)](https://x.com/NXP)
-
-## 7. Release Notes<a name="step7"></a>
-
-| Version | Description / Update                           | Date                        |
-|:-------:|------------------------------------------------|----------------------------:|
-| 1.0     | Initial release on Application Code Hub        | August 28<sup>th</sup> 2024 |
-| 2.0     | Converted to RFID Smart Inventory System       | November 2026               |
-#   m i n i p r o j e c t i o t  
- 
+*SPDX-License-Identifier: BSD-3-Clause*  
+*Copyright 2024 NXP — Modified for RFID Inventory System*
