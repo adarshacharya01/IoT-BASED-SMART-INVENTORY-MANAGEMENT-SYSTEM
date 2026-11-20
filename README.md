@@ -1,7 +1,8 @@
-# NXP Application Code Hub
+﻿# miniprojectiot
 
+## IoT-Based Smart Inventory Management System Using FRDM-MCXW71 and RFID Technology
 
-## MCXW71 Accelerometer and light sensor over Wireless UART
+An automated inventory tracking and management system utilizing the **FRDM-MCXW71** development board (Arm Cortex-M33, BLE 5.3), **RC522 RFID reader** (13.56 MHz SPI), buzzer audio feedback, and Bluetooth LE Wireless UART telemetry.
 
 This demo serves as guide on enabling FXLS897xxx accelerometer over I2C and light sensor over ADC readings. The ADC conversions are triggered by a hardware timer trigger. The I2C transfers make use of ISSDK. Interact application through the IoT Toolbox using a Smartphone.
 
@@ -161,3 +162,4 @@ Questions regarding the content/correctness of this example can be entered as Is
 | Version | Description / Update                           | Date                        |
 |:-------:|------------------------------------------------|----------------------------:|
 | 1.0     | Initial release on Application Code Hub        | August 28<sup>th</sup> 2024 |
+| 2.0     | Converted to RFID Smart Inventory System       | November 2026               |

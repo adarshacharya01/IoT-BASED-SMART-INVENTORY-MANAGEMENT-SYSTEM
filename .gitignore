@@ -1,0 +1,19 @@
+# Build outputs
+Debug/
+Release/
+bin/
+obj/
+*.elf
+*.bin
+*.hex
+*.map
+*.o
+*.d
+.ninja_log
+.ninja_deps
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# IDE / Tool configs
+.codex/

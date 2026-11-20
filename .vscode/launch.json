@@ -1,0 +1,30 @@
+{
+  "configurations": [
+    {
+      "type": "mcuxpresso-debug",
+      "name": "Debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": {
+        "elf": "${workspaceFolder}/Debug/frdmmcxw71_wireless_uart_bm_light_sensor.elf"
+      },
+      "stopAtSymbol": "main",
+      "probeSerialNumber": "",
+      "isAttach": false,
+      "skipBuildBeforeDebug": false,
+      "gdbInitCommands": [
+        "set remotetimeout 600",
+        "set debug-file-directory",
+        "set non-stop off"
+      ],
+      "gdbServerConfigs": {
+        "linkserver": {
+          "device": "MCXW716CxxxA:FRDM-MCXW71"
+        },
+        "segger": {},
+        "pemicro": {}
+      },
+      "showDevDebugOutput": "none"
+    }
+  ]
+}
