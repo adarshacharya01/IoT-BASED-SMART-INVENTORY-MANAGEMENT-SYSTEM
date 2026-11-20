@@ -42,8 +42,8 @@ except ImportError:
 # Configuration
 # ---------------------------------------------------------------------------
 DEVICE_NAME      = "RFID_INVENTORY"
-UART_TX_UUID     = "01ff0100-ba5e-f4ee-5ca1-eb1e5e4b1ce0"   # board → host (notify)
-UART_RX_UUID     = "01ff0200-ba5e-f4ee-5ca1-eb1e5e4b1ce0"   # host → board (write)
+UART_TX_UUID     = "01ff0101-ba5e-f4ee-5ca1-eb1e5e4b1ce0"   # board → host (notify char_uart_stream)
+UART_RX_UUID     = "01ff0101-ba5e-f4ee-5ca1-eb1e5e4b1ce0"   # host → board (write char_uart_stream)
 MQTT_BROKER      = "localhost"
 MQTT_PORT        = 1883
 MQTT_TOPIC_DATA  = "inventory/update"

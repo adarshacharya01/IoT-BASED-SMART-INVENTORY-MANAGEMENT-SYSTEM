@@ -66,9 +66,9 @@ static gapAdStructure_t advScanStruct[3] = {
     .aData = (uint8_t *)uuid_service_wireless_uart
   },
   {
-    .adType = gAdShortenedLocalName_c,
-    .length = 7,
-    .aData = (uint8_t*)"NXP_WU"
+    .adType = gAdCompleteLocalName_c,
+    .length = 15,
+    .aData = (uint8_t*)"RFID_INVENTORY"
   }
 };
 

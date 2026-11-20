@@ -12,8 +12,9 @@ PRIMARY_SERVICE(service_gap, gBleSig_GenericAccessProfile_d)
             VALUE(value_security_levels, gBleSig_GattSecurityLevels_d, (gPermissionFlagReadable_c), 2, 0x01, 0x03)
 
 PRIMARY_SERVICE_UUID128(service_wireless_uart, uuid_service_wireless_uart)
-    CHARACTERISTIC_UUID128(char_uart_stream, uuid_uart_stream, (gGattCharPropWriteWithoutRsp_c))
+    CHARACTERISTIC_UUID128(char_uart_stream, uuid_uart_stream, (gGattCharPropWriteWithoutRsp_c | gGattCharPropNotify_c))
         VALUE_UUID128_VARLEN(value_uart_stream, uuid_uart_stream, (gPermissionFlagWritable_c), gAttMaxWriteDataSize_d(gAttMaxMtu_c), 1, 0x00)
+        CCCD(cccd_uart_stream)
 
 PRIMARY_SERVICE(service_battery, gBleSig_BatteryService_d)
     CHARACTERISTIC(char_battery_level, gBleSig_BatteryLevel_d, (gGattCharPropNotify_c | gGattCharPropRead_c))

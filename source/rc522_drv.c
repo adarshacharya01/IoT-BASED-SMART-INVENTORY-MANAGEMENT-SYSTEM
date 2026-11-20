@@ -103,8 +103,8 @@ static void RC522_SPI_Init(void)
      * PTB1 = LPSPI1_SIN  (Alt 2) -> Connect to RC522 MISO
      * PTB2 = LPSPI1_SCK  (Alt 2) -> Connect to RC522 SCK
      * PTB3 = LPSPI1_SOUT (Alt 2) -> Connect to RC522 MOSI
-     * CS is software controlled via PTC2 -> Connect to RC522 SDA (SS)
-     * RST is software controlled via PTC3 -> Connect to RC522 RST
+     * CS is software controlled via PTA18 (J2 pin 10) -> Connect to RC522 SDA (SS)
+     * RST is software controlled via PTC4 (J1 pin 6)  -> Connect to RC522 RST
      */
     PORT_SetPinMux(PORTB, 1U, kPORT_MuxAlt2);  /* MISO (SIN) */
     PORT_SetPinMux(PORTB, 2U, kPORT_MuxAlt2);  /* SCK */

@@ -59,7 +59,7 @@
 #endif
 
 #ifndef gWuart_AutoStart_c
-#define gWuart_AutoStart_c 0
+#define gWuart_AutoStart_c 1
 #endif
 
 #ifndef gWuart_AutoStartGapRole_c

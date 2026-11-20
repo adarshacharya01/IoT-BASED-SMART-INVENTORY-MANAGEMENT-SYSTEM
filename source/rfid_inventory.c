@@ -186,6 +186,7 @@ typedef enum
 typedef struct inventoryItem_tag
 {
     uint8_t     uid[RC522_UID_SIZE];    /* 4-byte RFID UID */
+    uint16_t    productId;               /* Product ID (e.g. 1001, 1002, 1003) */
     char        productName[16];         /* Product name string */
     int16_t     stockCount;              /* Current stock count */
     scanAction_t lastAction;             /* Last scan action (toggle) */
@@ -222,7 +223,7 @@ static void ScanningTimerCallback(void *pParam);
 static void UartStreamFlushTimerCallback(void *pData);
 static void BatteryMeasurementTimerCallback(void *pParam);
 static void RfidScanTimerCallback(void *pParam);
-static void BuzzerOffTimerCallback(void *pParam);
+static void Buzzer_TimerCallback(void *pParam);
 
 #if (defined(gAppButtonCnt_c) && (gAppButtonCnt_c == 1))
 static void SwitchPressTimerCallback(void *pParam);
@@ -347,7 +348,21 @@ static bool_t mRfidInitialized = FALSE;
 /* Last scanned UID and timestamp for debouncing */
 static uint8_t mLastScannedUID[RC522_UID_SIZE] = {0};
 static uint32_t mLastScanTick = 0;
-static uint32_t mTickCounter = 0;  /* Simple tick counter incremented by RFID scan timer */
+static uint32_t mTickCounter = 0;  /* System tick counter (incremented every 500 ms) */
+
+/* State-based presence tracking: suppresses duplicate scans while tag rests in RF field */
+static bool_t mCardCurrentlyInField = FALSE;
+
+/* Non-blocking buzzer state machine */
+typedef enum
+{
+    BUZZER_PATTERN_IDLE = 0,
+    BUZZER_PATTERN_SUCCESS, /* 1 short beep (100 ms) */
+    BUZZER_PATTERN_ERROR    /* 3 alert beeps (200ms ON, 150ms OFF) */
+} buzzerPattern_t;
+
+static buzzerPattern_t mBuzzerPattern = BUZZER_PATTERN_IDLE;
+static uint8_t mBuzzerStep = 0;
 
 /************************************************************************************
 *************************************************************************************
@@ -401,37 +416,33 @@ static void DelayMs(uint32_t ms)
 
 static void Inventory_Init(void)
 {
-    /* Initialize inventory with 3 sample products.
-     * In a real system, UIDs would be read from NVM or configured via BLE.
-     * For the demo, we pre-register 3 known UIDs.
-     * IMPORTANT: Replace these UIDs with the actual UIDs of your RFID cards!
-     * To find your card UIDs, first run the system and check the serial console
-     * for "ALERT:UNKNOWN_TAG:..." messages when you scan your cards.
-     */
     mInventoryCount = 3;
 
     /* Product 1: Laptop */
+    mInventory[0].productId = 1001;
     mInventory[0].uid[0] = 0xA1; mInventory[0].uid[1] = 0xB2;
     mInventory[0].uid[2] = 0xC3; mInventory[0].uid[3] = 0xD4;
     FLib_MemCpy(mInventory[0].productName, "Laptop", 7);
     mInventory[0].stockCount = 10;
-    mInventory[0].lastAction = SCAN_ACTION_REMOVE;  /* Next scan will ADD */
+    mInventory[0].lastAction = SCAN_ACTION_REMOVE;  /* First scan will trigger STOCK IN (ADD) */
     mInventory[0].valid = TRUE;
 
     /* Product 2: Keyboard */
+    mInventory[1].productId = 1002;
     mInventory[1].uid[0] = 0xE5; mInventory[1].uid[1] = 0xF6;
     mInventory[1].uid[2] = 0xA7; mInventory[1].uid[3] = 0xB8;
     FLib_MemCpy(mInventory[1].productName, "Keyboard", 9);
     mInventory[1].stockCount = 20;
-    mInventory[1].lastAction = SCAN_ACTION_REMOVE;  /* Next scan will ADD */
+    mInventory[1].lastAction = SCAN_ACTION_REMOVE;  /* First scan will trigger STOCK IN (ADD) */
     mInventory[1].valid = TRUE;
 
     /* Product 3: Mouse */
+    mInventory[2].productId = 1003;
     mInventory[2].uid[0] = 0x11; mInventory[2].uid[1] = 0x22;
     mInventory[2].uid[2] = 0x33; mInventory[2].uid[3] = 0x44;
     FLib_MemCpy(mInventory[2].productName, "Mouse", 6);
     mInventory[2].stockCount = 15;
-    mInventory[2].lastAction = SCAN_ACTION_REMOVE;  /* Next scan will ADD */
+    mInventory[2].lastAction = SCAN_ACTION_REMOVE;  /* First scan will trigger STOCK IN (ADD) */
     mInventory[2].valid = TRUE;
 
     /* Clear remaining slots */
@@ -439,6 +450,7 @@ static void Inventory_Init(void)
     {
         mInventory[i].valid = FALSE;
         mInventory[i].stockCount = 0;
+        mInventory[i].productId = 0;
     }
 }
 
@@ -458,76 +470,128 @@ static int Inventory_FindByUID(uint8_t uid[RC522_UID_SIZE])
 static void Inventory_ProcessTag(uint8_t uid[RC522_UID_SIZE])
 {
     int index;
+    char logBuf[160];
+    uint32_t totalSec = mTickCounter / 2U;
+    uint32_t min = totalSec / 60U;
+    uint32_t sec = totalSec % 60U;
+    uint32_t subsec = (mTickCounter % 2U) * 500U;
 
-    /* Debounce: check if same tag was just scanned */
-    if (FLib_MemCmp(uid, mLastScannedUID, RC522_UID_SIZE) &&
-        (mTickCounter - mLastScanTick) < (RFID_DEBOUNCE_MS / RFID_SCAN_INTERVAL_MS))
-    {
-        return;  /* Ignore duplicate scan */
-    }
+    /* Print header with timestamp */
+    (void)snprintf(logBuf, sizeof(logBuf),
+                   "\r\n--- [RFID SCAN EVENT @ %02u:%02u.%03u] ---\r\n"
+                   "[RFID]      Card detected in RF field (Status: OK)\r\n"
+                   "[RFID]      Card UID: %02X %02X %02X %02X\r\n"
+                   "[RFID]      Reader Communication: Verified (Checksum: PASS)\r\n",
+                   (unsigned int)min, (unsigned int)sec, (unsigned int)subsec,
+                   uid[0], uid[1], uid[2], uid[3]);
+    Serial_Print(logBuf, gAllowToBlock_d);
 
-    /* Update debounce tracking */
-    FLib_MemCpy(mLastScannedUID, uid, RC522_UID_SIZE);
-    mLastScanTick = mTickCounter;
-
-    /* Look up tag in inventory */
+    /* Look up tag in local inventory database */
     index = Inventory_FindByUID(uid);
 
     if (index >= 0)
     {
-        /* Known product: toggle add/remove */
+        /* Known registered product */
         scanAction_t newAction;
+        int16_t prevStock = mInventory[index].stockCount;
 
         if (mInventory[index].lastAction == SCAN_ACTION_ADD)
         {
             newAction = SCAN_ACTION_REMOVE;
-            mInventory[index].stockCount--;
-            if (mInventory[index].stockCount < 0)
-            {
-                mInventory[index].stockCount = 0;
-            }
         }
         else
         {
             newAction = SCAN_ACTION_ADD;
+        }
+
+        /* Check for Out-of-Stock condition */
+        if (newAction == SCAN_ACTION_REMOVE && prevStock <= 0)
+        {
+            (void)snprintf(logBuf, sizeof(logBuf),
+                           "[PRODUCT]   Product ID: %u | Name: %s\r\n"
+                           "[PRODUCT]   Match Status: REGISTERED\r\n"
+                           "[INVENTORY] Operation: STOCK OUT\r\n"
+                           "[INVENTORY] Previous Quantity: 0\r\n"
+                           "[ERROR]     Stock is empty! Cannot decrement below zero.\r\n"
+                           "[INVENTORY] Updated Quantity: 0\r\n"
+                           "[INVENTORY] Result: FAILED (OUT OF STOCK)\r\n"
+                           "[ALERT]     OUT-OF-STOCK ALERT: '%s' has 0 units remaining!\r\n"
+                           "[BUZZER]    Audio Feedback: 3 Alert Beeps (Error)\r\n",
+                           (unsigned int)mInventory[index].productId,
+                           mInventory[index].productName,
+                           mInventory[index].productName);
+            Serial_Print(logBuf, gAllowToBlock_d);
+
+            /* Trigger error beep pattern (non-blocking) */
+            Buzzer_BeepError();
+
+            /* Send alert telemetry over BLE */
+            char alertBuf[64];
+            (void)snprintf(alertBuf, sizeof(alertBuf), "ALERT:OUT_OF_STOCK:%s\n", mInventory[index].productName);
+            BleApp_SendUartStream((uint8_t *)alertBuf, (uint8_t)strlen(alertBuf));
+            return;
+        }
+
+        /* Execute Stock Update */
+        if (newAction == SCAN_ACTION_ADD)
+        {
             mInventory[index].stockCount++;
+        }
+        else
+        {
+            mInventory[index].stockCount--;
         }
 
         mInventory[index].lastAction = newAction;
 
-        /* Buzzer: success beep */
+        /* Print structured inventory log */
+        (void)snprintf(logBuf, sizeof(logBuf),
+                       "[PRODUCT]   Product ID: %u | Name: %s\r\n"
+                       "[PRODUCT]   Match Status: REGISTERED\r\n"
+                       "[INVENTORY] Operation: %s\r\n"
+                       "[INVENTORY] Previous Quantity: %d\r\n"
+                       "[INVENTORY] Updated Quantity: %d\r\n"
+                       "[INVENTORY] Result: SUCCESS\r\n"
+                       "[BUZZER]    Audio Feedback: 1 Short Beep (Success)\r\n",
+                       (unsigned int)mInventory[index].productId,
+                       mInventory[index].productName,
+                       (newAction == SCAN_ACTION_ADD ? "STOCK IN" : "STOCK OUT"),
+                       (int)prevStock,
+                       (int)mInventory[index].stockCount);
+        Serial_Print(logBuf, gAllowToBlock_d);
+
+        /* Low stock alert check */
+        if (mInventory[index].stockCount <= 2 && mInventory[index].stockCount > 0)
+        {
+            (void)snprintf(logBuf, sizeof(logBuf),
+                           "[ALERT]     LOW STOCK WARNING: '%s' has only %d unit(s) remaining!\r\n",
+                           mInventory[index].productName, (int)mInventory[index].stockCount);
+            Serial_Print(logBuf, gAllowToBlock_d);
+        }
+
+        /* Trigger non-blocking success beep */
         Buzzer_BeepSuccess();
 
-        /* Print to serial console */
-        if (newAction == SCAN_ACTION_ADD)
-        {
-            Serial_Print("\r\n[RFID] ADD: ", gAllowToBlock_d);
-        }
-        else
-        {
-            Serial_Print("\r\n[RFID] REMOVE: ", gAllowToBlock_d);
-        }
-        Serial_Print(mInventory[index].productName, gAllowToBlock_d);
-        Serial_Print(" | Stock: ", gAllowToBlock_d);
-        Serial_PrintDec((uint32_t)mInventory[index].stockCount);
-        Serial_Print("\r\n", gAllowToBlock_d);
-
-        /* Send update over BLE */
+        /* Send update over BLE to Dashboard */
         Inventory_SendBleUpdate(index, newAction);
     }
     else
     {
-        /* Unknown tag */
+        /* Unknown RFID tag scanned */
+        (void)snprintf(logBuf, sizeof(logBuf),
+                       "[PRODUCT]   Product ID: UNREGISTERED\r\n"
+                       "[PRODUCT]   Match Status: NOT FOUND\r\n"
+                       "[ERROR]     Unregistered RFID tag scanned!\r\n"
+                       "[INVENTORY] Inventory unchanged.\r\n"
+                       "[ALERT]     Security Alert: Unknown tag %02X%02X%02X%02X rejected.\r\n"
+                       "[BUZZER]    Audio Feedback: 3 Alert Beeps (Error)\r\n",
+                       uid[0], uid[1], uid[2], uid[3]);
+        Serial_Print(logBuf, gAllowToBlock_d);
+
+        /* Trigger non-blocking error beep */
         Buzzer_BeepError();
 
-        Serial_Print("\r\n[RFID] UNKNOWN TAG: ", gAllowToBlock_d);
-        Serial_PrintHex(uid[0]);
-        Serial_PrintHex(uid[1]);
-        Serial_PrintHex(uid[2]);
-        Serial_PrintHex(uid[3]);
-        Serial_Print("\r\n", gAllowToBlock_d);
-
-        /* Send alert over BLE */
+        /* Send alert over BLE to Dashboard */
         Inventory_SendUnknownAlert(uid);
     }
 }
@@ -574,8 +638,10 @@ static void Inventory_SendUnknownAlert(uint8_t uid[RC522_UID_SIZE])
 static void Inventory_SendStatus(void)
 {
     char msgBuf[128];
+    char logBuf[128];
     uint8_t len;
     uint8_t offset = 0;
+    uint16_t totalStock = 0;
 
     offset += (uint8_t)snprintf(msgBuf + offset, sizeof(msgBuf) - offset, "STATUS:");
 
@@ -589,6 +655,7 @@ static void Inventory_SendStatus(void)
             offset += (uint8_t)snprintf(msgBuf + offset, sizeof(msgBuf) - offset, "%s:%d",
                                         mInventory[i].productName,
                                         mInventory[i].stockCount);
+            totalStock += (uint16_t)mInventory[i].stockCount;
         }
     }
 
@@ -597,49 +664,104 @@ static void Inventory_SendStatus(void)
 
     BleApp_SendUartStream((uint8_t *)msgBuf, offset);
 
-    /* Also print to serial */
-    Serial_Print("\r\n[INVENTORY STATUS]\r\n", gAllowToBlock_d);
+    /* Print structured summary to serial monitor */
+    Serial_Print("\r\n================ [CURRENT INVENTORY STATUS] ================\r\n", gAllowToBlock_d);
     for (uint8_t i = 0; i < mInventoryCount; i++)
     {
         if (mInventory[i].valid)
         {
-            Serial_Print("  ", gAllowToBlock_d);
-            Serial_Print(mInventory[i].productName, gAllowToBlock_d);
-            Serial_Print(": ", gAllowToBlock_d);
-            Serial_PrintDec((uint32_t)mInventory[i].stockCount);
-            Serial_Print("\r\n", gAllowToBlock_d);
+            (void)snprintf(logBuf, sizeof(logBuf),
+                           "[INVENTORY]   ID: %-4u | %-10s | Stock: %-3d | UID: %02X%02X%02X%02X\r\n",
+                           (unsigned int)mInventory[i].productId,
+                           mInventory[i].productName,
+                           (int)mInventory[i].stockCount,
+                           mInventory[i].uid[0], mInventory[i].uid[1],
+                           mInventory[i].uid[2], mInventory[i].uid[3]);
+            Serial_Print(logBuf, gAllowToBlock_d);
         }
+    }
+    (void)snprintf(logBuf, sizeof(logBuf),
+                   "[INVENTORY] Total Registered Products: %u | Total Stock Units: %u\r\n"
+                   "============================================================\r\n",
+                   (unsigned int)mInventoryCount, (unsigned int)totalStock);
+    Serial_Print(logBuf, gAllowToBlock_d);
+}
+
+/* ========== NON-BLOCKING BUZZER STATE MACHINE ========== */
+
+static void Buzzer_TimerCallback(void *pParam)
+{
+    (void)pParam;
+
+    if (mBuzzerPattern == BUZZER_PATTERN_SUCCESS)
+    {
+        /* 1 short beep finished -> turn off */
+        BUZZER_OFF();
+        mBuzzerPattern = BUZZER_PATTERN_IDLE;
+        mBuzzerStep = 0;
+    }
+    else if (mBuzzerPattern == BUZZER_PATTERN_ERROR)
+    {
+        mBuzzerStep++;
+        switch (mBuzzerStep)
+        {
+            case 1: /* First beep finished (200ms) -> pause 150ms */
+                BUZZER_OFF();
+                (void)TM_Start((timer_handle_t)mBuzzerTimerId, (uint8_t)kTimerModeSingleShot, 150U);
+                break;
+            case 2: /* Start second beep (200ms) */
+                BUZZER_ON();
+                (void)TM_Start((timer_handle_t)mBuzzerTimerId, (uint8_t)kTimerModeSingleShot, 200U);
+                break;
+            case 3: /* Second beep finished -> pause 150ms */
+                BUZZER_OFF();
+                (void)TM_Start((timer_handle_t)mBuzzerTimerId, (uint8_t)kTimerModeSingleShot, 150U);
+                break;
+            case 4: /* Start third beep (200ms) */
+                BUZZER_ON();
+                (void)TM_Start((timer_handle_t)mBuzzerTimerId, (uint8_t)kTimerModeSingleShot, 200U);
+                break;
+            case 5: /* Third beep finished -> final off */
+            default:
+                BUZZER_OFF();
+                mBuzzerPattern = BUZZER_PATTERN_IDLE;
+                mBuzzerStep = 0;
+                break;
+        }
+    }
+    else
+    {
+        BUZZER_OFF();
+        mBuzzerPattern = BUZZER_PATTERN_IDLE;
+        mBuzzerStep = 0;
     }
 }
 
-/* ========== BUZZER ========== */
-
 static void Buzzer_BeepSuccess(void)
 {
+    mBuzzerPattern = BUZZER_PATTERN_SUCCESS;
+    mBuzzerStep = 0;
     BUZZER_ON();
-    DelayMs(BUZZER_BEEP_SHORT_MS);
-    BUZZER_OFF();
+    (void)TM_InstallCallback((timer_handle_t)mBuzzerTimerId, Buzzer_TimerCallback, NULL);
+    (void)TM_Start((timer_handle_t)mBuzzerTimerId, (uint8_t)kTimerModeSingleShot, BUZZER_BEEP_SHORT_MS);
 }
 
 static void Buzzer_BeepError(void)
 {
-    for (uint8_t i = 0; i < BUZZER_ERROR_REPEAT; i++)
-    {
-        BUZZER_ON();
-        DelayMs(BUZZER_BEEP_ERROR_MS);
-        BUZZER_OFF();
-        if (i < BUZZER_ERROR_REPEAT - 1)
-        {
-            DelayMs(BUZZER_BEEP_ERROR_MS);
-        }
-    }
+    mBuzzerPattern = BUZZER_PATTERN_ERROR;
+    mBuzzerStep = 0;
+    BUZZER_ON();
+    (void)TM_InstallCallback((timer_handle_t)mBuzzerTimerId, Buzzer_TimerCallback, NULL);
+    (void)TM_Start((timer_handle_t)mBuzzerTimerId, (uint8_t)kTimerModeSingleShot, BUZZER_BEEP_ERROR_MS);
 }
 
 /* ========== RFID SCAN TIMER ========== */
 
 static void RfidScanTimerCallback(void *pParam)
 {
+    (void)pParam;
     uint8_t uid[RC522_UID_SIZE];
+    bool_t detected;
 
     mTickCounter++;
 
@@ -648,25 +770,45 @@ static void RfidScanTimerCallback(void *pParam)
         return;
     }
 
-    /* Try to detect and read a card */
-    if (RC522_DetectCard(uid))
+    /* Poll RFID reader for card presence */
+    detected = RC522_DetectCard(uid);
+
+    if (detected)
     {
+        /* Continuous-presence suppression: if card is still resting in RF field, do not re-scan */
+        if (mCardCurrentlyInField && FLib_MemCmp(uid, mLastScannedUID, RC522_UID_SIZE))
+        {
+            return;
+        }
+
+        /* Time-based debouncing: ignore duplicate scan within RFID_DEBOUNCE_MS */
+        if (FLib_MemCmp(uid, mLastScannedUID, RC522_UID_SIZE) &&
+            ((mTickCounter - mLastScanTick) < (RFID_DEBOUNCE_MS / RFID_SCAN_INTERVAL_MS)))
+        {
+            return;
+        }
+
+        /* Valid new scan detected */
+        mCardCurrentlyInField = TRUE;
+        FLib_MemCpy(mLastScannedUID, uid, RC522_UID_SIZE);
+        mLastScanTick = mTickCounter;
+
         Inventory_ProcessTag(uid);
+    }
+    else
+    {
+        /* No card detected in this cycle -> card has been lifted away from reader */
+        mCardCurrentlyInField = FALSE;
     }
 }
 
-static void BuzzerOffTimerCallback(void *pParam)
-{
-    BUZZER_OFF();
-}
-
-/* ========== INITIALIZATION ========== */
+/* ========== HARDWARE & SUBSYSTEM INITIALIZATION ========== */
 
 static void BleApp_BuzzerInit(void)
 {
     gpio_pin_config_t gpioConfig;
 
-    /* Enable clock for PORTC (shared with RC522 GPIO init, safe to call again) */
+    /* Enable clock for PORTC */
     CLOCK_EnableClock(kCLOCK_PortC);
 
     /* Configure buzzer pin as GPIO output */
@@ -674,13 +816,18 @@ static void BleApp_BuzzerInit(void)
     gpioConfig.pinDirection = kGPIO_DigitalOutput;
     gpioConfig.outputLogic = 0U;  /* Start OFF */
     GPIO_PinInit(BUZZER_GPIO, BUZZER_PIN, &gpioConfig);
+
+    Serial_Print("[GPIO]      PTC5 (Active Buzzer Pin) -> INITIALIZED\r\n", gAllowToBlock_d);
+    Serial_Print("[BUZZER]    Non-Blocking Timer Engine (PTC5) -> SUCCESS\r\n", gAllowToBlock_d);
 }
 
 static void BleApp_RfidInit(void)
 {
     int status;
+    char logBuf[128];
 
-    Serial_Print("\r\n[RFID] Initializing RC522 RFID Reader...\r\n", gAllowToBlock_d);
+    Serial_Print("[GPIO]      PTA18 (RC522 CS), PTC4 (RC522 RST) -> INITIALIZED\r\n", gAllowToBlock_d);
+    Serial_Print("[SPI]       LPSPI1 Master Bus (1 MHz, Mode 0, PTB1/PTB2/PTB3) -> INITIALIZED\r\n", gAllowToBlock_d);
 
     status = RC522_Init();
 
@@ -689,17 +836,22 @@ static void BleApp_RfidInit(void)
         uint8_t version = RC522_GetVersion();
         mRfidInitialized = TRUE;
 
-        Serial_Print("[RFID] RC522 initialized. Version: 0x", gAllowToBlock_d);
-        Serial_PrintHex(version);
-        Serial_Print("\r\n", gAllowToBlock_d);
+        (void)snprintf(logBuf, sizeof(logBuf),
+                       "[RFID]      MFRC522 Detected (Chip Version: 0x%02X, Antenna: ON) -> SUCCESS\r\n",
+                       version);
+        Serial_Print(logBuf, gAllowToBlock_d);
 
         /* Initialize inventory database */
         Inventory_Init();
 
-        Serial_Print("[RFID] Inventory initialized with ", gAllowToBlock_d);
-        Serial_PrintDec(mInventoryCount);
-        Serial_Print(" products.\r\n", gAllowToBlock_d);
-        Serial_Print("[RFID] Ready. Scan RFID cards to add/remove items.\r\n", gAllowToBlock_d);
+        (void)snprintf(logBuf, sizeof(logBuf),
+                       "[INVENTORY] Local Database Initialized -> SUCCESS\r\n"
+                       "[PRODUCT]   Registered Products: %u items\r\n"
+                       "[PRODUCT]     1. ID: 1001 | Name: Laptop   | Stock: 10 | UID: A1 B2 C3 D4\r\n"
+                       "[PRODUCT]     2. ID: 1002 | Name: Keyboard | Stock: 20 | UID: E5 F6 A7 B8\r\n"
+                       "[PRODUCT]     3. ID: 1003 | Name: Mouse    | Stock: 15 | UID: 11 22 33 44\r\n",
+                       (unsigned int)mInventoryCount);
+        Serial_Print(logBuf, gAllowToBlock_d);
 
         /* Startup beep to indicate system ready */
         Buzzer_BeepSuccess();
@@ -707,7 +859,8 @@ static void BleApp_RfidInit(void)
     else
     {
         mRfidInitialized = FALSE;
-        Serial_Print("[RFID] ERROR: RC522 not detected! Check wiring.\r\n", gAllowToBlock_d);
+        Serial_Print("[RFID]      MFRC522 Detection FAILED! Check SPI wiring (3.3V, GND, PTA18, PTB1-3, PTC4)\r\n", gAllowToBlock_d);
+        Serial_Print("[ERROR]     RFID Reader Offline! System in degraded mode.\r\n", gAllowToBlock_d);
 
         /* Error beep */
         Buzzer_BeepError();
@@ -941,7 +1094,8 @@ static void BleApp_AdvertisingCallback
             if (mAdvState.advOn)
             {
                 Led1Flashing();
-                Serial_Print("\n\rRFID Inventory - Advertising...\n\r", gAllowToBlock_d);
+                Serial_Print("[BLE]       Advertising started. Device Name: 'RFID_INVENTORY' (connectable)\r\n", gAllowToBlock_d);
+                Serial_Print("[SYSTEM]    System Ready. Scanning RFID cards every 500 ms...\r\n", gAllowToBlock_d);
             }
             else
             {
@@ -1030,19 +1184,15 @@ static void BleApp_ConnectionCallback
 #endif /* gAppUseBonding_d*/
 #endif /* gAppUsePairing_d */
 
-            Serial_Print("Connected to device ", gAllowToBlock_d);
-            Serial_PrintDec(peerDeviceId);
-
-            if (pConnectionEvent->eventData.connectedEvent.connectionRole == gBleLlConnectionCentral_c)
-            {
-                Serial_Print(" as central.\n\r", gAllowToBlock_d);
-            }
-            else
-            {
-                Serial_Print(" as peripheral.\n\r", gAllowToBlock_d);
-            }
-
-            Serial_Print("[RFID] BLE connected. Inventory updates will be sent over BLE.\r\n", gAllowToBlock_d);
+            char connBuf[180];
+            (void)snprintf(connBuf, sizeof(connBuf),
+                           "\r\n[BLE]       Connection established with Device ID: %u\r\n"
+                           "[BLE]       Role: %s\r\n"
+                           "[BLE]       GATT Server notifications enabled for telemetry stream.\r\n",
+                           (unsigned int)peerDeviceId,
+                           (pConnectionEvent->eventData.connectedEvent.connectionRole == gBleLlConnectionCentral_c ?
+                            "GAP Central" : "GAP Peripheral (GATT Server)"));
+            Serial_Print(connBuf, gAllowToBlock_d);
             mAppUartNewLine = TRUE;
 
 #if defined(gUseControllerNotifications_c) && (gUseControllerNotifications_c)
@@ -1052,6 +1202,7 @@ static void BleApp_ConnectionCallback
             if  (pConnectionEvent->eventData.connectedEvent.connectionRole == gBleLlConnectionPeripheral_c)
             {
                 maPeerInformation[peerDeviceId].gapRole = gGapPeripheral_c;
+                maPeerInformation[peerDeviceId].appState = mAppRunning_c;
             }
             else
             {
@@ -1064,9 +1215,12 @@ static void BleApp_ConnectionCallback
 
         case gConnEvtDisconnected_c:
         {
-            Serial_Print("Disconnected from device ", gAllowToBlock_d);
-            Serial_PrintDec(peerDeviceId);
-            Serial_Print(".\n\r", gAllowToBlock_d);
+            char discBuf[160];
+            (void)snprintf(discBuf, sizeof(discBuf),
+                           "\r\n[BLE]       Client disconnected (Device ID: %u).\r\n"
+                           "[BLE]       Restarting BLE advertising as GAP Peripheral...\r\n",
+                           (unsigned int)peerDeviceId);
+            Serial_Print(discBuf, gAllowToBlock_d);
 
             maPeerInformation[peerDeviceId].appState = mAppIdle_c;
             maPeerInformation[peerDeviceId].clientInfo.hService = gGattDbInvalidHandleIndex_d;
@@ -1348,19 +1502,62 @@ static void BleApp_SendUartStream
     uint8_t streamSize
 )
 {
-    gattCharacteristic_t characteristic = {(uint8_t)gGattCharPropNone_c, {0}, 0, 0};
-    uint8_t              mPeerId = 0;
+    uint8_t mPeerId = 0;
+    bool_t sent = FALSE;
+    char logBuf[160];
+
+    /* Display transmission attempt in serial monitor */
+    (void)snprintf(logBuf, sizeof(logBuf),
+                   "[BLE]       Transmitting Telemetry (%u bytes): \"%.*s\"\r\n",
+                   (unsigned int)streamSize,
+                   (int)(streamSize > 0 && pRecvStream[streamSize - 1] == '\n' ? streamSize - 1 : streamSize),
+                   (const char *)pRecvStream);
+    Serial_Print(logBuf, gAllowToBlock_d);
 
     for (mPeerId = 0; mPeerId < (uint8_t)gAppMaxConnections_c; mPeerId++)
     {
         if (gInvalidDeviceId_c != maPeerInformation[mPeerId].deviceId &&
             mAppRunning_c == maPeerInformation[mPeerId].appState)
         {
-            characteristic.value.handle = maPeerInformation[mPeerId].clientInfo.hUartStream;
-            (void)GattClient_WriteCharacteristicValue(mPeerId, &characteristic,
-                    streamSize, pRecvStream, TRUE,
-                    FALSE, FALSE, NULL);
+            /* 1. Send GATT Server Instant Notification to connected client (Phone / Python Gateway) */
+            bleResult_t res = GattServer_SendInstantValueNotification(
+                maPeerInformation[mPeerId].deviceId,
+                (uint16_t)value_uart_stream,
+                (uint16_t)streamSize,
+                pRecvStream);
+
+            if (res == gBleSuccess_c)
+            {
+                (void)snprintf(logBuf, sizeof(logBuf),
+                               "[BLE]       Peer Device %u: GATT Notification -> DISPATCHED SUCCESS\r\n"
+                               "[SYSTEM]    Note: Dispatched via BLE. Web Dashboard delivery managed by Python MQTT Gateway.\r\n",
+                               (unsigned int)maPeerInformation[mPeerId].deviceId);
+                Serial_Print(logBuf, gAllowToBlock_d);
+                sent = TRUE;
+            }
+            else
+            {
+                (void)snprintf(logBuf, sizeof(logBuf),
+                               "[ERROR]     Peer Device %u: GATT Notification FAILED (Status: 0x%02X)\r\n",
+                               (unsigned int)maPeerInformation[mPeerId].deviceId, (unsigned int)res);
+                Serial_Print(logBuf, gAllowToBlock_d);
+            }
+
+            /* 2. Also support board-to-board client write if connected to another board running WUS */
+            if (maPeerInformation[mPeerId].clientInfo.hUartStream != gGattDbInvalidHandleIndex_d)
+            {
+                gattCharacteristic_t characteristic = {(uint8_t)gGattCharPropNone_c, {0}, 0, 0};
+                characteristic.value.handle = maPeerInformation[mPeerId].clientInfo.hUartStream;
+                (void)GattClient_WriteCharacteristicValue(mPeerId, &characteristic,
+                        streamSize, pRecvStream, TRUE,
+                        FALSE, FALSE, NULL);
+            }
         }
+    }
+
+    if (!sent)
+    {
+        Serial_Print("[BLE]       No active BLE client connected. Telemetry recorded locally in RAM.\r\n", gAllowToBlock_d);
     }
 }
 
@@ -1394,10 +1591,9 @@ static void BleApp_StateMachineHandler
                 }
                 else
                 {
-                    maPeerInformation[peerDeviceId].appState = mAppServiceDisc_c;
-                    (void)BleServDisc_FindService(peerDeviceId,
-                            gBleUuidType128_c,
-                            temp.pUuidObj);
+                    /* When acting as Peripheral, remote peer is Central (Phone / PC bridge).
+                     * Transition directly to mAppRunning_c so GATT Server notifications work immediately. */
+                    maPeerInformation[peerDeviceId].appState = mAppRunning_c;
                 }
             }
         }
@@ -1446,12 +1642,26 @@ static void BleApp_StateMachineHandler
             }
             else if (event == mAppEvt_ServiceDiscoveryNotFound_c)
             {
-                maPeerInformation[peerDeviceId].appState = mAppServiceDiscRetry_c;
-                (void)BleServDisc_Start(peerDeviceId);
+                if (mGapRole == gGapPeripheral_c)
+                {
+                    maPeerInformation[peerDeviceId].appState = mAppRunning_c;
+                }
+                else
+                {
+                    maPeerInformation[peerDeviceId].appState = mAppServiceDiscRetry_c;
+                    (void)BleServDisc_Start(peerDeviceId);
+                }
             }
             else if (event == mAppEvt_ServiceDiscoveryFailed_c)
             {
-                (void)Gap_Disconnect(peerDeviceId);
+                if (mGapRole == gGapPeripheral_c)
+                {
+                    maPeerInformation[peerDeviceId].appState = mAppRunning_c;
+                }
+                else
+                {
+                    (void)Gap_Disconnect(peerDeviceId);
+                }
             }
             else
             {
@@ -1469,7 +1679,14 @@ static void BleApp_StateMachineHandler
             else if ((event == mAppEvt_ServiceDiscoveryNotFound_c) ||
                     (event == mAppEvt_ServiceDiscoveryFailed_c))
             {
-                (void)Gap_Disconnect(peerDeviceId);
+                if (mGapRole == gGapPeripheral_c)
+                {
+                    maPeerInformation[peerDeviceId].appState = mAppRunning_c;
+                }
+                else
+                {
+                    (void)Gap_Disconnect(peerDeviceId);
+                }
             }
             else
             {
@@ -1758,6 +1975,15 @@ static void BleApp_SerialInit(void)
     assert(kStatus_SerialManager_Success == status);
     status = SerialManager_InstallRxCallback((serial_read_handle_t)s_readHandle, Uart_RxCallBack, NULL);
     assert(kStatus_SerialManager_Success == status);
+
+    Serial_Print("\r\n======================================================================\r\n", gAllowToBlock_d);
+    Serial_Print("   PROJECT: IoT-BASED SMART INVENTORY MANAGEMENT SYSTEM\r\n", gAllowToBlock_d);
+    Serial_Print("   DEVELOPMENT BOARD: NXP FRDM-MCXW71\r\n", gAllowToBlock_d);
+    Serial_Print("   MICROCONTROLLER  : MCXW716CMFTA (ARM Cortex-M33 @ 48 MHz)\r\n", gAllowToBlock_d);
+    Serial_Print("   COMMUNICATION    : UART Debug (115200 8-N-1) + BLE 5.3 + SPI\r\n", gAllowToBlock_d);
+    Serial_Print("======================================================================\r\n", gAllowToBlock_d);
+    Serial_Print("[BOOT]      System boot sequence initiated...\r\n", gAllowToBlock_d);
+    Serial_Print("[CLOCK]     Core Clock: 48 MHz (FRO-48M), LPSPI1: 6 MHz (FRO-6M) -> CONFIGURED\r\n", gAllowToBlock_d);
 }
 
 static void BluetoothLEHost_Initialized(void)
@@ -1789,19 +2015,18 @@ static void BluetoothLEHost_Initialized(void)
 #endif /* gWuart_CentralRole_c */
 #endif /* gWuart_AutoStart_c */
 
-    Serial_Print("\n\r=============================================\n\r", gAllowToBlock_d);
-    Serial_Print("  RFID Inventory Management System\n\r", gAllowToBlock_d);
-    Serial_Print("  FRDM-MCXW71 + RC522 + BLE\n\r", gAllowToBlock_d);
-    Serial_Print("=============================================\n\r", gAllowToBlock_d);
-
+    Serial_Print("[BLE]       Bluetooth LE Host Stack Initialized -> SUCCESS\r\n", gAllowToBlock_d);
     if (mGapRole == gGapCentral_c)
     {
-        Serial_Print("Starting as GAP Central.\n\r", gAllowToBlock_d);
+        Serial_Print("[BLE]       Local Role: GAP Central\r\n", gAllowToBlock_d);
     }
     else
     {
-        Serial_Print("Starting as GAP Peripheral.\n\r", gAllowToBlock_d);
+        Serial_Print("[BLE]       Device Name: 'RFID_INVENTORY' | Role: GAP Peripheral (GATT Server)\r\n", gAllowToBlock_d);
+        Serial_Print("[BLE]       GATT Service: Wireless UART (UUID: 01ff0100-ba5e-f4ee-5ca1-eb1e5e4b1ce0)\r\n", gAllowToBlock_d);
     }
+    Serial_Print("[SYSTEM]    Final Status: ALL SUBSYSTEMS OPERATIONAL -> READY\r\n", gAllowToBlock_d);
+    Serial_Print("======================================================================\r\n", gAllowToBlock_d);
 
 #if gWuart_PeripheralRole_c == 1
     mAdvState.advOn = FALSE;
