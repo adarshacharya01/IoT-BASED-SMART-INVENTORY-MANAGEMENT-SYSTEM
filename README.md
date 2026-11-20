@@ -1,4 +1,4 @@
-﻿# miniprojectiot
+# miniprojectiot
 
 ## IoT-Based Smart Inventory Management System Using FRDM-MCXW71 and RFID Technology
 
@@ -163,3 +163,5 @@ Questions regarding the content/correctness of this example can be entered as Is
 |:-------:|------------------------------------------------|----------------------------:|
 | 1.0     | Initial release on Application Code Hub        | August 28<sup>th</sup> 2024 |
 | 2.0     | Converted to RFID Smart Inventory System       | November 2026               |
+#   m i n i p r o j e c t i o t  
+ 
